@@ -1,0 +1,649 @@
+# 機械学習パイプラインでの正規化
+## 📋 正しい処理フロー図 - 新人エンジニア向け丁寧解説
+
+---
+
+## 🎯 はじめに：なぜ順序が重要なのか？
+
+機械学習において、**データの前処理順序**は成功の鍵を握ります。特に正規化の順序を間違えると、**データリーク**という深刻な問題が発生し、実際には使えないモデルを作ってしまいます。
+
+### 🚨 データリークとは？
+```
+データリーク = 本来知ってはいけない「未来の情報」が訓練に紛れ込むこと
+
+例：テストデータの統計値（平均・標準偏差）を使って訓練データを正規化
+→ 実際の運用では得られない情報を使ってしまう
+→ 過度に楽観的な評価結果が出る
+→ 本番で性能が大幅に悪化する
+```
+
+---
+
+## 🔄 完全な機械学習パイプライン
+
+### 📊 正しい処理フロー図
+
+```
+【データ準備フェーズ】
+┌─────────────────┐
+│   生データ       │ ← CSVファイル、データベース、API等
+│ (CSV, DB, etc.) │   から取得した未加工のデータ
+└─────────┬───────┘
+          │
+          ▼
+┌─────────────────┐
+│ データクリーニング │ ← 欠損値処理、異常値除去、
+│ (欠損値処理等)    │   データ型変換、重複除去
+└─────────┬───────┘
+          │
+          ▼
+┌─────────────────┐
+│ 訓練/テスト分割  │ ← train_test_split()で
+│ train_test_split │   データを時系列順に分割
+└─────────┬───────┘
+          │
+          ▼
+【正規化フェーズ】⚠️ 重要：この順序を守る！
+┌─────────────────┐
+│ ① 訓練データで   │ ← fit()メソッドで訓練データのみから
+│   統計値を学習   │   平均・標準偏差・最小値・最大値を計算
+│   scaler.fit()  │
+└─────────┬───────┘
+          │
+          ▼
+┌─────────────────┐
+│ ② 訓練データを   │ ← transform()メソッドで①で学習した
+│   変換           │   統計値を使って訓練データを変換
+│ scaler.transform │
+└─────────┬───────┘
+          │
+          ▼
+┌─────────────────┐
+│ ③ テストデータを │ ← 同じscalerのtransform()メソッドで
+│   同じ統計値で   │   ①で学習した統計値でテストデータ変換
+│   変換           │   （新たに統計値は計算しない）
+│ scaler.transform │
+└─────────┬───────┘
+          │
+          ▼
+【モデル学習・評価】
+┌─────────────────┐
+│ モデル訓練       │ ← 正規化済み訓練データでモデル学習
+└─────────┬───────┘
+          │
+          ▼
+┌─────────────────┐
+│ モデル評価       │ ← 正規化済みテストデータで性能評価
+└─────────────────┘
+```
+
+---
+
+## 🛠️ 各フェーズの詳細実装
+
+### フェーズ1: データ準備
+
+```python
+# 必要なライブラリをインポート
+import pandas as pd                           # データフレーム操作
+import numpy as np                            # 数値計算
+from sklearn.model_selection import train_test_split  # データ分割
+from sklearn.preprocessing import StandardScaler      # 標準化
+from sklearn.ensemble import RandomForestRegressor    # モデル例
+from sklearn.metrics import mean_squared_error        # 評価指標
+import matplotlib.pyplot as plt               # 可視化
+
+# 1. 生データの読み込み
+print("=== フェーズ1: データ準備 ===")
+df = pd.read_csv('employee_data.csv')        # CSVファイルから読み込み
+print(f"データサイズ: {df.shape}")            # 行数・列数確認
+print("最初の5行:")
+print(df.head())                              # データの概要確認
+
+# データの基本情報表示
+print("\nデータ型情報:")
+print(df.dtypes)                              # 各列のデータ型
+print("\n欠損値の確認:")
+print(df.isnull().sum())                      # 各列の欠損値数
+
+# 2. データクリーニング
+print("\n=== データクリーニング実行 ===")
+
+# 欠損値処理の例
+if df.isnull().sum().sum() > 0:               # 欠損値が存在する場合
+    print("欠損値を発見。処理を実行します...")
+    # 数値列は平均値で補完
+    numeric_columns = df.select_dtypes(include=[np.number]).columns
+    for col in numeric_columns:
+        if df[col].isnull().sum() > 0:        # 該当列に欠損値がある場合
+            mean_value = df[col].mean()       # 平均値を計算
+            df[col].fillna(mean_value, inplace=True)  # 平均値で補完
+            print(f"{col}列の欠損値を平均値{mean_value:.2f}で補完")
+
+# 重複データの除去
+duplicates = df.duplicated().sum()            # 重複行数をカウント
+if duplicates > 0:
+    df = df.drop_duplicates()                 # 重複行を削除
+    print(f"{duplicates}行の重複データを削除")
+
+print(f"クリーニング後のデータサイズ: {df.shape}")
+```
+
+### フェーズ2: 訓練/テスト分割
+
+```python
+print("\n=== フェーズ2: 訓練/テスト分割 ===")
+
+# 特徴量とターゲット変数を分離
+# drop()メソッドでターゲット列を除いた特徴量を作成
+X = df.drop('salary', axis=1)                # salaryを除く全列が特徴量
+y = df['salary']                             # salaryがターゲット変数
+
+print(f"特徴量の形状: {X.shape}")             # 特徴量の行数・列数
+print(f"ターゲットの形状: {y.shape}")         # ターゲットの要素数
+
+# 訓練/テストデータに分割
+# train_test_split()で8:2の比率で分割
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y,                                    # 分割対象のデータ
+    test_size=0.2,                          # テストデータの割合（20%）
+    random_state=42,                        # 再現性のためのシード
+    stratify=None                           # 回帰問題なので層化サンプリングなし
+)
+
+print(f"訓練データサイズ: {X_train.shape[0]}行")
+print(f"テストデータサイズ: {X_test.shape[0]}行")
+
+# 分割後のデータ分布確認
+print(f"\n訓練データのターゲット統計:")
+print(f"平均: {y_train.mean():.2f}")          # 訓練データの平均年収
+print(f"標準偏差: {y_train.std():.2f}")       # 訓練データの標準偏差
+
+print(f"\nテストデータのターゲット統計:")
+print(f"平均: {y_test.mean():.2f}")           # テストデータの平均年収
+print(f"標準偏差: {y_test.std():.2f}")        # テストデータの標準偏差
+```
+
+### フェーズ3: 正規化（重要なポイント）
+
+```python
+print("\n=== フェーズ3: 正規化（重要フェーズ）===")
+
+# 数値特徴量のみを選択（カテゴリ変数は別処理）
+numeric_features = X_train.select_dtypes(include=[np.number]).columns.tolist()
+print(f"正規化対象の数値特徴量: {numeric_features}")
+
+# ⚠️ 重要：StandardScalerのインスタンスを作成
+scaler = StandardScaler()
+
+# ステップ1: 訓練データでのみ統計値を学習
+print("\n【ステップ1】訓練データで統計値を学習")
+# fit()メソッドで訓練データから平均・標準偏差を計算・記録
+scaler.fit(X_train[numeric_features])        # ⚠️ 訓練データのみ使用！
+
+# 学習した統計値を確認
+print("学習した平均値:")
+for i, col in enumerate(numeric_features):
+    print(f"  {col}: {scaler.mean_[i]:.2f}")  # 各特徴量の平均値
+
+print("学習した標準偏差:")
+for i, col in enumerate(numeric_features):
+    print(f"  {col}: {scaler.scale_[i]:.2f}") # 各特徴量の標準偏差
+
+# ステップ2: 訓練データを変換
+print("\n【ステップ2】訓練データを変換")
+# transform()メソッドでステップ1で学習した統計値を使用して変換
+X_train_scaled = X_train.copy()              # 元データのコピー作成
+X_train_scaled[numeric_features] = scaler.transform(X_train[numeric_features])
+
+# 変換後の統計値確認（理論的には平均≈0, 標準偏差≈1）
+print("訓練データ正規化後の統計値:")
+for col in numeric_features:
+    mean_val = X_train_scaled[col].mean()     # 正規化後の平均
+    std_val = X_train_scaled[col].std()       # 正規化後の標準偏差
+    print(f"  {col}: 平均={mean_val:.4f}, 標準偏差={std_val:.4f}")
+
+# ステップ3: テストデータを同じ統計値で変換
+print("\n【ステップ3】テストデータを同じ統計値で変換")
+# ⚠️ 重要：同じscalerを使用（新たにfit()しない）
+X_test_scaled = X_test.copy()                # 元データのコピー作成
+X_test_scaled[numeric_features] = scaler.transform(X_test[numeric_features])
+
+# テストデータの正規化後統計値（訓練と異なる値になる場合がある）
+print("テストデータ正規化後の統計値:")
+for col in numeric_features:
+    mean_val = X_test_scaled[col].mean()      # 正規化後の平均
+    std_val = X_test_scaled[col].std()        # 正規化後の標準偏差
+    print(f"  {col}: 平均={mean_val:.4f}, 標準偏差={std_val:.4f}")
+
+print("\n✅ 正規化完了：訓練データの統計値でテストデータも変換済み")
+```
+
+---
+
+## 🚫 よくある間違いパターン
+
+### ❌ 間違いパターン1: 全データで正規化
+
+```python
+print("\n=== ❌ 間違いパターン1: 全データで正規化 ===")
+
+# これは絶対にやってはいけない！
+wrong_scaler = StandardScaler()
+
+# 🚨 危険：全データ（X）で統計値を学習
+# テストデータの情報が訓練に漏れる
+print("危険な操作：全データで正規化...")
+X_all_wrong = pd.concat([X_train, X_test])   # 全データを結合
+wrong_scaler.fit(X_all_wrong[numeric_features])  # 全データで学習
+
+# この後で分割しても手遅れ
+X_train_wrong = wrong_scaler.transform(X_train[numeric_features])
+X_test_wrong = wrong_scaler.transform(X_test[numeric_features])
+
+print("🚨 問題点：テストデータの統計情報が訓練に使われている")
+print("本番環境では未来のデータは存在しないため、現実的でない評価となる")
+```
+
+### ❌ 間違いパターン2: テストデータで再学習
+
+```python
+print("\n=== ❌ 間違いパターン2: テストデータで再学習 ===")
+
+# これも間違い：テストデータで別のスケーラーを作る
+test_scaler = StandardScaler()               # 新しいスケーラー作成
+
+# 🚨 危険：テストデータで新たに統計値を学習
+test_scaler.fit(X_test[numeric_features])    # テストデータで学習
+X_test_wrong2 = test_scaler.transform(X_test[numeric_features])
+
+print("🚨 問題点：テストデータ専用の統計値で変換している")
+print("訓練とテストで異なる基準を使うため、モデルが正しく動作しない")
+```
+
+### ✅ 正しいパターン：統一された変換
+
+```python
+print("\n=== ✅ 正しいパターン：統一された変換 ===")
+
+# 正しい方法の再確認
+correct_scaler = StandardScaler()
+
+# 1. 訓練データのみで学習
+correct_scaler.fit(X_train[numeric_features])
+
+# 2. 同じ統計値で両方を変換
+X_train_correct = correct_scaler.transform(X_train[numeric_features])
+X_test_correct = correct_scaler.transform(X_test[numeric_features])
+
+print("✅ 正解：訓練データの統計値で両方を統一変換")
+print("本番環境でも同じ統計値を使用できるため、現実的な評価")
+```
+
+---
+
+## 🎯 実践例：完全なパイプライン
+
+### モデル学習と評価
+
+```python
+print("\n=== フェーズ4: モデル学習 ===")
+
+# Random Forestモデルのインスタンス作成
+model = RandomForestRegressor(
+    n_estimators=100,                        # 決定木の数
+    random_state=42,                         # 再現性確保
+    n_jobs=-1                               # 全CPUコアを使用
+)
+
+# 正規化済み訓練データでモデル学習
+print("モデル学習を開始...")
+model.fit(X_train_scaled[numeric_features], y_train)
+print("✅ モデル学習完了")
+
+# 特徴量重要度の確認
+feature_importance = pd.DataFrame({
+    'feature': numeric_features,             # 特徴量名
+    'importance': model.feature_importances_ # 重要度スコア
+}).sort_values('importance', ascending=False)  # 重要度順にソート
+
+print("\n特徴量重要度（上位5位）:")
+print(feature_importance.head())
+
+print("\n=== フェーズ5: モデル評価 ===")
+
+# 訓練データでの予測（過学習チェック用）
+y_train_pred = model.predict(X_train_scaled[numeric_features])
+train_rmse = np.sqrt(mean_squared_error(y_train, y_train_pred))
+
+# テストデータでの予測（真の性能評価）
+y_test_pred = model.predict(X_test_scaled[numeric_features])
+test_rmse = np.sqrt(mean_squared_error(y_test, y_test_pred))
+
+print(f"訓練データのRMSE: {train_rmse:.2f}")
+print(f"テストデータのRMSE: {test_rmse:.2f}")
+
+# 過学習の判定
+overfitting_ratio = test_rmse / train_rmse
+if overfitting_ratio > 1.2:
+    print(f"⚠️  過学習の可能性あり（比率: {overfitting_ratio:.2f}）")
+elif overfitting_ratio < 0.8:
+    print(f"⚠️  アンダーフィッティングの可能性（比率: {overfitting_ratio:.2f}）")
+else:
+    print(f"✅ 適切な学習状態（比率: {overfitting_ratio:.2f}）")
+```
+
+### 予測結果の可視化
+
+```python
+print("\n=== 予測結果の可視化 ===")
+
+# 散布図で実際値vs予測値をプロット
+plt.figure(figsize=(12, 5))                 # 図のサイズ設定
+
+# 訓練データの結果
+plt.subplot(1, 2, 1)                        # 1行2列の1番目
+plt.scatter(y_train, y_train_pred, alpha=0.6, color='blue')
+plt.plot([y_train.min(), y_train.max()],    # 対角線（完全予測ライン）
+         [y_train.min(), y_train.max()], 'r--', lw=2)
+plt.xlabel('実際の年収')
+plt.ylabel('予測年収')
+plt.title(f'訓練データ（RMSE: {train_rmse:.2f}）')
+plt.grid(True, alpha=0.3)
+
+# テストデータの結果
+plt.subplot(1, 2, 2)                        # 1行2列の2番目
+plt.scatter(y_test, y_test_pred, alpha=0.6, color='green')
+plt.plot([y_test.min(), y_test.max()],      # 対角線（完全予測ライン）
+         [y_test.min(), y_test.max()], 'r--', lw=2)
+plt.xlabel('実際の年収')
+plt.ylabel('予測年収')
+plt.title(f'テストデータ（RMSE: {test_rmse:.2f}）')
+plt.grid(True, alpha=0.3)
+
+plt.tight_layout()                          # レイアウト調整
+plt.show()
+
+# 残差プロット（予測誤差の分析）
+plt.figure(figsize=(10, 4))
+
+# 訓練データの残差
+plt.subplot(1, 2, 1)
+train_residuals = y_train - y_train_pred    # 残差計算
+plt.scatter(y_train_pred, train_residuals, alpha=0.6, color='blue')
+plt.axhline(y=0, color='r', linestyle='--')  # ゼロライン
+plt.xlabel('予測年収')
+plt.ylabel('残差（実際値 - 予測値）')
+plt.title('訓練データの残差プロット')
+plt.grid(True, alpha=0.3)
+
+# テストデータの残差
+plt.subplot(1, 2, 2)
+test_residuals = y_test - y_test_pred       # 残差計算
+plt.scatter(y_test_pred, test_residuals, alpha=0.6, color='green')
+plt.axhline(y=0, color='r', linestyle='--')  # ゼロライン
+plt.xlabel('予測年収')
+plt.ylabel('残差（実際値 - 予測値）')
+plt.title('テストデータの残差プロット')
+plt.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.show()
+```
+
+---
+
+## 🔧 実用的なTips
+
+### 1. sklearn Pipelineの活用
+
+```python
+print("\n=== Pipeline活用による自動化 ===")
+
+from sklearn.pipeline import Pipeline
+
+# パイプラインで前処理とモデルを統合
+pipeline = Pipeline([
+    ('scaler', StandardScaler()),           # ステップ1: 正規化
+    ('model', RandomForestRegressor(random_state=42))  # ステップ2: モデル
+])
+
+# パイプライン全体を訓練データで学習
+print("パイプライン学習開始...")
+pipeline.fit(X_train[numeric_features], y_train)
+
+# テストデータで評価（正規化も自動実行）
+y_pred_pipeline = pipeline.predict(X_test[numeric_features])
+pipeline_rmse = np.sqrt(mean_squared_error(y_test, y_pred_pipeline))
+
+print(f"Pipelineを使った場合のRMSE: {pipeline_rmse:.2f}")
+print("✅ Pipeline使用により、正規化忘れのミスを防止")
+```
+
+### 2. 時系列データでの分割
+
+```python
+print("\n=== 時系列データでの注意点 ===")
+
+# 時系列データの場合はランダム分割ではなく時間順分割
+def time_series_split(df, test_ratio=0.2):
+    """
+    時系列データを時間順に分割する関数
+    """
+    n_total = len(df)                       # 全データ数
+    n_train = int(n_total * (1 - test_ratio))  # 訓練データ数計算
+    
+    # 時間順に分割（古いデータ→訓練、新しいデータ→テスト）
+    train_data = df.iloc[:n_train]          # 前半を訓練データ
+    test_data = df.iloc[n_train:]           # 後半をテストデータ
+    
+    return train_data, test_data
+
+# 使用例（時系列データがある場合）
+if 'date' in df.columns:                   # 日付列がある場合
+    df_sorted = df.sort_values('date')      # 日付順にソート
+    train_ts, test_ts = time_series_split(df_sorted)
+    print(f"時系列分割：訓練{len(train_ts)}行, テスト{len(test_ts)}行")
+```
+
+### 3. 正規化の逆変換
+
+```python
+print("\n=== 正規化の逆変換（実用例）===")
+
+# 予測結果を元のスケールに戻したい場合（ターゲット変数の正規化）
+y_scaler = StandardScaler()
+
+# ターゲット変数も正規化する場合
+y_train_scaled = y_scaler.fit_transform(y_train.values.reshape(-1, 1)).flatten()
+y_test_scaled = y_scaler.transform(y_test.values.reshape(-1, 1)).flatten()
+
+print("ターゲット変数の正規化統計値:")
+print(f"平均: {y_scaler.mean_[0]:.2f}")
+print(f"標準偏差: {y_scaler.scale_[0]:.2f}")
+
+# 正規化済みターゲットでモデル学習
+model_scaled_target = RandomForestRegressor(random_state=42)
+model_scaled_target.fit(X_train_scaled[numeric_features], y_train_scaled)
+
+# 予測と逆変換
+y_pred_scaled = model_scaled_target.predict(X_test_scaled[numeric_features])
+# inverse_transform()で元のスケールに戻す
+y_pred_original = y_scaler.inverse_transform(y_pred_scaled.reshape(-1, 1)).flatten()
+
+print(f"\n逆変換後の予測例（最初の5件）:")
+for i in range(5):
+    print(f"実際値: {y_test.iloc[i]:.0f}, 予測値: {y_pred_original[i]:.0f}")
+```
+
+---
+
+## 📋 チェックリスト
+
+### 実装前の確認
+
+```python
+def pre_implementation_check(X_train, X_test, y_train, y_test):
+    """
+    実装前のデータ状態確認関数
+    """
+    print("=== 実装前チェックリスト ===")
+    
+    checks = {
+        "データ分割済み": X_train is not None and X_test is not None,
+        "ターゲット変数分割済み": y_train is not None and y_test is not None,
+        "訓練データサイズ適切": len(X_train) > len(X_test),
+        "欠損値なし（訓練）": not X_train.isnull().any().any(),
+        "欠損値なし（テスト）": not X_test.isnull().any().any(),
+    }
+    
+    for check_name, result in checks.items():
+        status = "✅" if result else "❌"
+        print(f"{status} {check_name}")
+    
+    return all(checks.values())
+
+# チェック実行
+all_checks_passed = pre_implementation_check(X_train, X_test, y_train, y_test)
+if all_checks_passed:
+    print("\n🎉 すべてのチェックをパス！正規化を開始できます")
+else:
+    print("\n⚠️  いくつかの問題があります。修正してから正規化を実行してください")
+```
+
+### 実装後の確認
+
+```python
+def post_implementation_check(scaler, X_train_scaled, X_test_scaled):
+    """
+    正規化実装後の確認関数
+    """
+    print("\n=== 実装後チェックリスト ===")
+    
+    # 数値特徴量のみ抽出
+    numeric_cols = X_train_scaled.select_dtypes(include=[np.number]).columns
+    
+    checks = {
+        "スケーラーが学習済み": hasattr(scaler, 'mean_'),
+        "訓練データ平均≈0": abs(X_train_scaled[numeric_cols].mean().mean()) < 0.1,
+        "訓練データ標準偏差≈1": abs(X_train_scaled[numeric_cols].std().mean() - 1) < 0.1,
+        "テストデータ形状一致": X_train_scaled.shape[1] == X_test_scaled.shape[1],
+    }
+    
+    for check_name, result in checks.items():
+        status = "✅" if result else "❌"
+        print(f"{status} {check_name}")
+    
+    # 詳細統計の表示
+    print(f"\n📊 正規化後統計値:")
+    print(f"訓練データ平均: {X_train_scaled[numeric_cols].mean().mean():.4f}")
+    print(f"訓練データ標準偏差: {X_train_scaled[numeric_cols].std().mean():.4f}")
+    print(f"テストデータ平均: {X_test_scaled[numeric_cols].mean().mean():.4f}")
+    print(f"テストデータ標準偏差: {X_test_scaled[numeric_cols].std().mean():.4f}")
+    
+    return all(checks.values())
+
+# チェック実行
+post_checks_passed = post_implementation_check(scaler, X_train_scaled, X_test_scaled)
+if post_checks_passed:
+    print("\n🎉 正規化が正しく実行されました！")
+else:
+    print("\n⚠️  正規化に問題がある可能性があります。再確認してください")
+```
+
+---
+
+## 🚀 本番環境での運用
+
+### 新しいデータの予測
+
+```python
+print("\n=== 本番環境での新データ予測 ===")
+
+def predict_new_data(model, scaler, new_data, feature_columns):
+    """
+    新しいデータに対する予測関数（本番環境用）
+    """
+    print("新データの予測処理開始...")
+    
+    # 1. 同じ前処理を適用
+    new_data_scaled = new_data.copy()
+    new_data_scaled[feature_columns] = scaler.transform(new_data[feature_columns])
+    
+    # 2. 予測実行
+    predictions = model.predict(new_data_scaled[feature_columns])
+    
+    # 3. 結果をデータフレームで返す
+    result_df = new_data.copy()
+    result_df['predicted_salary'] = predictions
+    
+    print(f"✅ {len(new_data)}件のデータを予測完了")
+    return result_df
+
+# 新データの例（実際にはAPIやデータベースから取得）
+new_employee_data = pd.DataFrame({
+    'age': [30, 35, 28],
+    'experience': [5, 8, 3],
+    'education_score': [85, 92, 78]
+})
+
+print("新入社員データ:")
+print(new_employee_data)
+
+# 予測実行
+if 'model' in locals() and 'scaler' in locals():
+    prediction_result = predict_new_data(
+        model, scaler, new_employee_data, numeric_features
+    )
+    print("\n予測結果:")
+    print(prediction_result[['age', 'experience', 'predicted_salary']])
+```
+
+---
+
+## 📚 まとめ
+
+### 🎯 重要ポイントの再確認
+
+1. **データ分割が先、正規化が後**: この順序は絶対に守る
+2. **訓練データのみで統計値学習**: テストデータの情報は使わない
+3. **同じスケーラーで両方変換**: 統一された基準で正規化
+4. **Pipelineの活用**: 手順の自動化でミス防止
+5. **チェックリストの活用**: 確実な実装のための検証
+
+### 🔄 典型的なワークフロー
+
+```python
+# 推奨される実装パターン
+def complete_ml_pipeline(df, target_column, test_size=0.2):
+    """
+    完全な機械学習パイプライン
+    """
+    # 1. データ準備
+    X = df.drop(target_column, axis=1)
+    y = df[target_column]
+    
+    # 2. 分割
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=test_size, random_state=42
+    )
+    
+    # 3. 正規化パイプライン
+    pipeline = Pipeline([
+        ('scaler', StandardScaler()),
+        ('model', RandomForestRegressor(random_state=42))
+    ])
+    
+    # 4. 学習
+    pipeline.fit(X_train, y_train)
+    
+    # 5. 評価
+    y_pred = pipeline.predict(X_test)
+    rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+    
+    return pipeline, rmse
+
+print("🎉 これで完璧な機械学習パイプラインをマスターしました！")
+```
+
+**新人エンジニアの皆さん、この順序を守って実装すれば、データリークのない信頼性の高いモデルを構築できます。実際のプロジェクトで活用してください！**
