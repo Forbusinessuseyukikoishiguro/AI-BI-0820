@@ -1,0 +1,683 @@
+"""
+Tableau Excel データ前処理ツール
+Author: Claude
+Description: ExcelデータをTableau分析用に効率的に前処理するためのPythonツール
+"""
+
+import pandas as pd
+import numpy as np
+import os
+import re
+from datetime import datetime
+from typing import List, Dict, Optional, Union, Any
+import warnings
+warnings.filterwarnings('ignore')
+
+
+class TableauDataPreprocessor:
+    """
+    Tableau分析用データ前処理クラス
+    
+    Excel/CSVファイルを読み込み、データクリーニングと変換を行う
+    """
+    
+    def __init__(self, file_path: str = None):
+        """
+        初期化
+        
+        Args:
+            file_path (str): 処理するファイルのパス
+        """
+        self.file_path = file_path
+        self.data = None
+        self.original_data = None
+        self.data_info = {}
+        self.processing_log = []
+        
+        if file_path:
+            self.load_data()
+    
+    def load_data(self, file_path: str = None) -> pd.DataFrame:
+        """
+        データファイルを読み込む
+        
+        Args:
+            file_path (str): ファイルパス（指定しない場合は初期化時のパスを使用）
+            
+        Returns:
+            pd.DataFrame: 読み込まれたデータ
+        """
+        if file_path:
+            self.file_path = file_path
+            
+        if not self.file_path:
+            raise ValueError("ファイルパスが指定されていません")
+            
+        if not os.path.exists(self.file_path):
+            raise FileNotFoundError(f"ファイルが見つかりません: {self.file_path}")
+        
+        file_extension = os.path.splitext(self.file_path)[1].lower()
+        
+        try:
+            if file_extension in ['.xlsx', '.xls']:
+                self.data = pd.read_excel(self.file_path)
+            elif file_extension == '.csv':
+                # 文字エンコーディングを自動判定
+                encodings = ['utf-8', 'shift_jis', 'cp932', 'iso-2022-jp']
+                for encoding in encodings:
+                    try:
+                        self.data = pd.read_csv(self.file_path, encoding=encoding)
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                else:
+                    self.data = pd.read_csv(self.file_path, encoding='utf-8', errors='ignore')
+            else:
+                raise ValueError(f"サポートされていないファイル形式: {file_extension}")
+            
+            # 元データのバックアップを作成
+            self.original_data = self.data.copy()
+            self._update_data_info()
+            self._log_action(f"ファイル読み込み完了: {os.path.basename(self.file_path)}")
+            
+            print(f"✅ データ読み込み完了: {self.data.shape[0]}行 × {self.data.shape[1]}列")
+            return self.data
+            
+        except Exception as e:
+            raise Exception(f"ファイル読み込みエラー: {str(e)}")
+    
+    def _update_data_info(self):
+        """データ情報を更新"""
+        if self.data is not None:
+            self.data_info = {
+                'rows': len(self.data),
+                'columns': len(self.data.columns),
+                'empty_cells': self.data.isnull().sum().sum(),
+                'duplicates': self.data.duplicated().sum(),
+                'memory_usage': self.data.memory_usage(deep=True).sum(),
+                'dtypes': self.data.dtypes.to_dict()
+            }
+    
+    def _log_action(self, action: str):
+        """処理ログを記録"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_entry = f"[{timestamp}] {action}"
+        self.processing_log.append(log_entry)
+        print(f"📝 {action}")
+    
+    def show_data_info(self) -> Dict[str, Any]:
+        """
+        データの詳細情報を表示
+        
+        Returns:
+            dict: データ情報
+        """
+        if self.data is None:
+            print("❌ データが読み込まれていません")
+            return {}
+        
+        print("\n" + "="*50)
+        print("📊 DATA SUMMARY")
+        print("="*50)
+        print(f"📁 ファイル: {os.path.basename(self.file_path) if self.file_path else 'Unknown'}")
+        print(f"📏 サイズ: {self.data_info['rows']:,}行 × {self.data_info['columns']}列")
+        print(f"🕳️  空セル: {self.data_info['empty_cells']:,}個")
+        print(f"🔄 重複行: {self.data_info['duplicates']:,}行")
+        print(f"💾 メモリ使用量: {self.data_info['memory_usage'] / 1024 / 1024:.2f} MB")
+        
+        print("\n📋 列情報:")
+        for i, (col, dtype) in enumerate(self.data_info['dtypes'].items()):
+            null_count = self.data[col].isnull().sum()
+            null_rate = (null_count / len(self.data)) * 100
+            print(f"  {i+1:2d}. {col:<30} | {str(dtype):<10} | 欠損: {null_count:,}個 ({null_rate:.1f}%)")
+        
+        return self.data_info
+    
+    def preview_data(self, n_rows: int = 10) -> pd.DataFrame:
+        """
+        データをプレビュー表示
+        
+        Args:
+            n_rows (int): 表示する行数
+            
+        Returns:
+            pd.DataFrame: プレビューデータ
+        """
+        if self.data is None:
+            print("❌ データが読み込まれていません")
+            return pd.DataFrame()
+        
+        print(f"\n👀 データプレビュー (最初の{n_rows}行):")
+        print("-" * 80)
+        preview = self.data.head(n_rows)
+        print(preview.to_string(max_cols=None, max_colwidth=20))
+        return preview
+    
+    def remove_empty_rows(self, threshold: float = 0.5) -> pd.DataFrame:
+        """
+        空行を削除
+        
+        Args:
+            threshold (float): 削除する閾値（0.5 = 半分以上が空の行を削除）
+            
+        Returns:
+            pd.DataFrame: 処理後のデータ
+        """
+        if self.data is None:
+            raise ValueError("データが読み込まれていません")
+        
+        initial_rows = len(self.data)
+        
+        # 各行の非null値の割合を計算
+        non_null_ratio = self.data.notna().sum(axis=1) / len(self.data.columns)
+        self.data = self.data[non_null_ratio >= threshold]
+        
+        removed_rows = initial_rows - len(self.data)
+        self._update_data_info()
+        self._log_action(f"空行削除: {removed_rows:,}行削除 (閾値: {threshold})")
+        
+        return self.data
+    
+    def remove_empty_columns(self, threshold: float = 0.5) -> pd.DataFrame:
+        """
+        空列を削除
+        
+        Args:
+            threshold (float): 削除する閾値（0.5 = 半分以上が空の列を削除）
+            
+        Returns:
+            pd.DataFrame: 処理後のデータ
+        """
+        if self.data is None:
+            raise ValueError("データが読み込まれていません")
+        
+        initial_cols = len(self.data.columns)
+        
+        # 各列の非null値の割合を計算
+        non_null_ratio = self.data.notna().sum() / len(self.data)
+        cols_to_keep = non_null_ratio[non_null_ratio >= threshold].index
+        self.data = self.data[cols_to_keep]
+        
+        removed_cols = initial_cols - len(self.data.columns)
+        self._update_data_info()
+        self._log_action(f"空列削除: {removed_cols}列削除 (閾値: {threshold})")
+        
+        return self.data
+    
+    def remove_duplicates(self, subset: List[str] = None, keep: str = 'first') -> pd.DataFrame:
+        """
+        重複行を削除
+        
+        Args:
+            subset (List[str]): 重複チェックする列名のリスト（None=全列）
+            keep (str): 保持する重複行 ('first', 'last', False)
+            
+        Returns:
+            pd.DataFrame: 処理後のデータ
+        """
+        if self.data is None:
+            raise ValueError("データが読み込まれていません")
+        
+        initial_rows = len(self.data)
+        self.data = self.data.drop_duplicates(subset=subset, keep=keep)
+        
+        removed_rows = initial_rows - len(self.data)
+        self._update_data_info()
+        self._log_action(f"重複行削除: {removed_rows:,}行削除")
+        
+        return self.data
+    
+    def fill_missing_values(self, strategy: str = 'forward', custom_value: Any = None, columns: List[str] = None) -> pd.DataFrame:
+        """
+        欠損値を埋める
+        
+        Args:
+            strategy (str): 埋める方法 ('forward', 'backward', 'mean', 'median', 'mode', 'zero', 'custom')
+            custom_value (Any): カスタム値（strategy='custom'の場合）
+            columns (List[str]): 処理する列名のリスト（None=全列）
+            
+        Returns:
+            pd.DataFrame: 処理後のデータ
+        """
+        if self.data is None:
+            raise ValueError("データが読み込まれていません")
+        
+        initial_nulls = self.data.isnull().sum().sum()
+        target_columns = columns if columns else self.data.columns
+        
+        for col in target_columns:
+            if col in self.data.columns:
+                if strategy == 'forward':
+                    self.data[col] = self.data[col].fillna(method='ffill')
+                elif strategy == 'backward':
+                    self.data[col] = self.data[col].fillna(method='bfill')
+                elif strategy == 'mean' and pd.api.types.is_numeric_dtype(self.data[col]):
+                    self.data[col] = self.data[col].fillna(self.data[col].mean())
+                elif strategy == 'median' and pd.api.types.is_numeric_dtype(self.data[col]):
+                    self.data[col] = self.data[col].fillna(self.data[col].median())
+                elif strategy == 'mode':
+                    mode_value = self.data[col].mode()
+                    if not mode_value.empty:
+                        self.data[col] = self.data[col].fillna(mode_value[0])
+                elif strategy == 'zero':
+                    self.data[col] = self.data[col].fillna(0)
+                elif strategy == 'custom':
+                    self.data[col] = self.data[col].fillna(custom_value)
+        
+        final_nulls = self.data.isnull().sum().sum()
+        filled_count = initial_nulls - final_nulls
+        self._update_data_info()
+        self._log_action(f"欠損値処理: {filled_count:,}個を埋めた (方法: {strategy})")
+        
+        return self.data
+    
+    def clean_text_data(self, columns: List[str] = None, operations: List[str] = None) -> pd.DataFrame:
+        """
+        テキストデータをクリーニング
+        
+        Args:
+            columns (List[str]): 処理する列名のリスト（None=文字列列すべて）
+            operations (List[str]): 実行する操作のリスト
+                ['trim', 'lower', 'upper', 'remove_special', 'normalize_space']
+                
+        Returns:
+            pd.DataFrame: 処理後のデータ
+        """
+        if self.data is None:
+            raise ValueError("データが読み込まれていません")
+        
+        if operations is None:
+            operations = ['trim', 'normalize_space']
+        
+        # 文字列列を自動選択
+        if columns is None:
+            columns = self.data.select_dtypes(include=['object']).columns.tolist()
+        
+        processed_columns = []
+        
+        for col in columns:
+            if col in self.data.columns:
+                original_data = self.data[col].copy()
+                
+                for operation in operations:
+                    if operation == 'trim':
+                        self.data[col] = self.data[col].astype(str).str.strip()
+                    elif operation == 'lower':
+                        self.data[col] = self.data[col].astype(str).str.lower()
+                    elif operation == 'upper':
+                        self.data[col] = self.data[col].astype(str).str.upper()
+                    elif operation == 'remove_special':
+                        self.data[col] = self.data[col].astype(str).str.replace(r'[^\w\s]', '', regex=True)
+                    elif operation == 'normalize_space':
+                        self.data[col] = self.data[col].astype(str).str.replace(r'\s+', ' ', regex=True)
+                
+                processed_columns.append(col)
+        
+        self._update_data_info()
+        self._log_action(f"テキストクリーニング: {len(processed_columns)}列処理 ({', '.join(operations)})")
+        
+        return self.data
+    
+    def convert_data_types(self, auto_convert: bool = True, type_mapping: Dict[str, str] = None) -> pd.DataFrame:
+        """
+        データ型を変換
+        
+        Args:
+            auto_convert (bool): 自動変換を行うか
+            type_mapping (dict): 手動での型指定 {'column_name': 'new_type'}
+            
+        Returns:
+            pd.DataFrame: 処理後のデータ
+        """
+        if self.data is None:
+            raise ValueError("データが読み込まれていません")
+        
+        converted_columns = []
+        
+        # 手動型指定
+        if type_mapping:
+            for col, new_type in type_mapping.items():
+                if col in self.data.columns:
+                    try:
+                        if new_type == 'datetime':
+                            self.data[col] = pd.to_datetime(self.data[col], errors='coerce')
+                        elif new_type == 'category':
+                            self.data[col] = self.data[col].astype('category')
+                        else:
+                            self.data[col] = self.data[col].astype(new_type)
+                        converted_columns.append(f"{col} -> {new_type}")
+                    except Exception as e:
+                        print(f"⚠️ {col}の型変換に失敗: {e}")
+        
+        # 自動変換
+        if auto_convert:
+            for col in self.data.columns:
+                try:
+                    # 数値変換を試行
+                    if self.data[col].dtype == 'object':
+                        # 数値かチェック
+                        numeric_series = pd.to_numeric(self.data[col], errors='coerce')
+                        if numeric_series.notna().sum() / len(self.data[col]) > 0.8:  # 80%以上が数値
+                            self.data[col] = numeric_series
+                            converted_columns.append(f"{col} -> numeric")
+                        
+                        # 日付変換を試行
+                        elif not converted_columns or col not in [c.split(' -> ')[0] for c in converted_columns]:
+                            try:
+                                date_series = pd.to_datetime(self.data[col], errors='coerce')
+                                if date_series.notna().sum() / len(self.data[col]) > 0.5:  # 50%以上が日付
+                                    self.data[col] = date_series
+                                    converted_columns.append(f"{col} -> datetime")
+                            except:
+                                pass
+                                
+                except Exception:
+                    continue
+        
+        self._update_data_info()
+        self._log_action(f"データ型変換: {len(converted_columns)}列変換")
+        
+        return self.data
+    
+    def filter_data(self, conditions: Dict[str, Any]) -> pd.DataFrame:
+        """
+        データをフィルタリング
+        
+        Args:
+            conditions (dict): フィルタ条件
+                例: {
+                    'column1': {'operator': '>', 'value': 100},
+                    'column2': {'operator': 'contains', 'value': 'keyword'},
+                    'column3': {'operator': 'in', 'value': ['A', 'B', 'C']}
+                }
+                
+        Returns:
+            pd.DataFrame: フィルタ後のデータ
+        """
+        if self.data is None:
+            raise ValueError("データが読み込まれていません")
+        
+        initial_rows = len(self.data)
+        mask = pd.Series([True] * len(self.data))
+        
+        for column, condition in conditions.items():
+            if column not in self.data.columns:
+                print(f"⚠️ 列 '{column}' が見つかりません")
+                continue
+            
+            operator = condition.get('operator', '==')
+            value = condition.get('value')
+            
+            try:
+                if operator == '>':
+                    mask &= (self.data[column] > value)
+                elif operator == '<':
+                    mask &= (self.data[column] < value)
+                elif operator == '>=':
+                    mask &= (self.data[column] >= value)
+                elif operator == '<=':
+                    mask &= (self.data[column] <= value)
+                elif operator == '==':
+                    mask &= (self.data[column] == value)
+                elif operator == '!=':
+                    mask &= (self.data[column] != value)
+                elif operator == 'contains':
+                    mask &= self.data[column].astype(str).str.contains(str(value), na=False)
+                elif operator == 'startswith':
+                    mask &= self.data[column].astype(str).str.startswith(str(value), na=False)
+                elif operator == 'endswith':
+                    mask &= self.data[column].astype(str).str.endswith(str(value), na=False)
+                elif operator == 'in':
+                    mask &= self.data[column].isin(value if isinstance(value, list) else [value])
+                elif operator == 'notin':
+                    mask &= ~self.data[column].isin(value if isinstance(value, list) else [value])
+                elif operator == 'isnull':
+                    mask &= self.data[column].isnull()
+                elif operator == 'notnull':
+                    mask &= self.data[column].notnull()
+                    
+            except Exception as e:
+                print(f"⚠️ フィルタ条件の適用に失敗 ({column}): {e}")
+        
+        self.data = self.data[mask]
+        filtered_rows = initial_rows - len(self.data)
+        self._update_data_info()
+        self._log_action(f"データフィルタ: {filtered_rows:,}行除外")
+        
+        return self.data
+    
+    def rename_columns(self, column_mapping: Dict[str, str]) -> pd.DataFrame:
+        """
+        列名を変更
+        
+        Args:
+            column_mapping (dict): 列名マッピング {'old_name': 'new_name'}
+            
+        Returns:
+            pd.DataFrame: 処理後のデータ
+        """
+        if self.data is None:
+            raise ValueError("データが読み込まれていません")
+        
+        self.data = self.data.rename(columns=column_mapping)
+        renamed_count = len([k for k in column_mapping.keys() if k in self.original_data.columns])
+        
+        self._update_data_info()
+        self._log_action(f"列名変更: {renamed_count}列変更")
+        
+        return self.data
+    
+    def create_tableau_extract(self, output_path: str = None, file_format: str = 'excel') -> str:
+        """
+        Tableau用にデータを保存
+        
+        Args:
+            output_path (str): 出力ファイルパス
+            file_format (str): ファイル形式 ('excel', 'csv')
+            
+        Returns:
+            str: 保存されたファイルパス
+        """
+        if self.data is None:
+            raise ValueError("データが読み込まれていません")
+        
+        if output_path is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            if file_format == 'excel':
+                output_path = f"tableau_ready_data_{timestamp}.xlsx"
+            else:
+                output_path = f"tableau_ready_data_{timestamp}.csv"
+        
+        try:
+            if file_format == 'excel':
+                with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+                    # メインデータ
+                    self.data.to_excel(writer, sheet_name='Data', index=False)
+                    
+                    # データ概要
+                    info_df = pd.DataFrame([
+                        ['総行数', self.data_info['rows']],
+                        ['総列数', self.data_info['columns']],
+                        ['空セル数', self.data_info['empty_cells']],
+                        ['重複行数', self.data_info['duplicates']],
+                        ['処理日時', datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
+                    ], columns=['項目', '値'])
+                    info_df.to_excel(writer, sheet_name='Summary', index=False)
+                    
+                    # 処理ログ
+                    if self.processing_log:
+                        log_df = pd.DataFrame(self.processing_log, columns=['処理ログ'])
+                        log_df.to_excel(writer, sheet_name='Processing_Log', index=False)
+                        
+            elif file_format == 'csv':
+                self.data.to_csv(output_path, index=False, encoding='utf-8-sig')
+            
+            self._log_action(f"ファイル保存完了: {output_path}")
+            print(f"✅ Tableau用データを保存しました: {output_path}")
+            
+            return output_path
+            
+        except Exception as e:
+            raise Exception(f"ファイル保存エラー: {str(e)}")
+    
+    def reset_data(self):
+        """データを元の状態にリセット"""
+        if self.original_data is not None:
+            self.data = self.original_data.copy()
+            self._update_data_info()
+            self.processing_log = []
+            self._log_action("データリセット完了")
+        else:
+            print("❌ 元データが見つかりません")
+    
+    def get_processing_log(self) -> List[str]:
+        """処理ログを取得"""
+        return self.processing_log.copy()
+    
+    def export_processing_summary(self, output_path: str = None) -> str:
+        """
+        処理サマリーをエクスポート
+        
+        Args:
+            output_path (str): 出力ファイルパス
+            
+        Returns:
+            str: 保存されたファイルパス
+        """
+        if output_path is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = f"processing_summary_{timestamp}.txt"
+        
+        summary = []
+        summary.append("=" * 60)
+        summary.append("TABLEAU データ前処理サマリー")
+        summary.append("=" * 60)
+        summary.append(f"処理日時: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        summary.append(f"対象ファイル: {os.path.basename(self.file_path) if self.file_path else 'Unknown'}")
+        summary.append("")
+        
+        summary.append("📊 最終データ概要:")
+        summary.append(f"  - 行数: {self.data_info['rows']:,}")
+        summary.append(f"  - 列数: {self.data_info['columns']}")
+        summary.append(f"  - 空セル数: {self.data_info['empty_cells']:,}")
+        summary.append(f"  - 重複行数: {self.data_info['duplicates']:,}")
+        summary.append("")
+        
+        summary.append("🔄 処理ログ:")
+        for log in self.processing_log:
+            summary.append(f"  {log}")
+        
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(summary))
+        
+        print(f"✅ 処理サマリーを保存しました: {output_path}")
+        return output_path
+
+
+def main():
+    """
+    メイン実行関数 - 使用例
+    """
+    print("🚀 Tableau Excel前処理ツール")
+    print("=" * 50)
+    
+    # 使用例
+    try:
+        # ファイルパスを指定してインスタンス作成
+        # processor = TableauDataPreprocessor("sample_data.xlsx")
+        
+        # または空インスタンスを作成してからファイル読み込み
+        processor = TableauDataPreprocessor()
+        
+        # ファイル読み込み（実際のファイルパスに置き換えてください）
+        file_path = input("📁 処理するExcel/CSVファイルのパスを入力してください: ").strip()
+        if file_path and os.path.exists(file_path):
+            processor.load_data(file_path)
+            
+            # データ情報表示
+            processor.show_data_info()
+            processor.preview_data()
+            
+            # 基本的な前処理を実行
+            print("\n🧹 基本クリーニングを開始...")
+            processor.remove_empty_rows()
+            processor.remove_empty_columns()
+            processor.remove_duplicates()
+            processor.clean_text_data()
+            processor.convert_data_types()
+            
+            # Tableau用データを保存
+            output_file = processor.create_tableau_extract()
+            
+            # 処理サマリーを保存
+            processor.export_processing_summary()
+            
+            print(f"\n✅ 前処理完了！ {output_file} をTableauで読み込んでください。")
+            
+        else:
+            print("❌ 有効なファイルパスを指定してください")
+            
+    except Exception as e:
+        print(f"❌ エラー: {e}")
+
+
+if __name__ == "__main__":
+    main()
+
+
+# =============================================================================
+# 詳細使用例
+# =============================================================================
+
+"""
+使用例1: 基本的な前処理
+------------------------
+processor = TableauDataPreprocessor("data.xlsx")
+processor.show_data_info()
+processor.remove_empty_rows()
+processor.remove_duplicates()
+processor.clean_text_data()
+processor.convert_data_types(auto_convert=True)
+processor.create_tableau_extract("clean_data.xlsx")
+
+
+使用例2: カスタム処理
+--------------------
+processor = TableauDataPreprocessor("sales_data.csv")
+
+# 欠損値を平均値で埋める
+processor.fill_missing_values(strategy='mean', columns=['price', 'quantity'])
+
+# 特定の条件でフィルタ
+conditions = {
+    'sales_amount': {'operator': '>', 'value': 1000},
+    'region': {'operator': 'in', 'value': ['Tokyo', 'Osaka']}
+}
+processor.filter_data(conditions)
+
+# 列名を変更
+column_mapping = {
+    'old_column_name': 'new_column_name',
+    'price': 'unit_price'
+}
+processor.rename_columns(column_mapping)
+
+# CSV形式で保存
+processor.create_tableau_extract("filtered_sales.csv", file_format='csv')
+
+
+使用例3: 型変換指定
+------------------
+type_mapping = {
+    'date_column': 'datetime',
+    'category_column': 'category',
+    'number_column': 'float64'
+}
+processor.convert_data_types(auto_convert=False, type_mapping=type_mapping)
+
+
+使用例4: テキストクリーニング
+---------------------------
+operations = ['trim', 'lower', 'remove_special', 'normalize_space']
+processor.clean_text_data(columns=['name', 'description'], operations=operations)
+"""
